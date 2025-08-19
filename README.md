@@ -1,17 +1,13 @@
-Otimização de Estoques – Insumos de Shopping
+🛒 Otimização de Estoques – Insumos de Shopping
 
 Aplicativo interativo em Streamlit para auxiliar gestores de shoppings e facilities a tomarem decisões de compra de insumos com base em modelos clássicos de otimização de estoque.
 
 Ele compara o cenário atual (baseline) com a política ótima (EOQ / (Q, r)), permitindo estimar economias financeiras e visualizar o comportamento do estoque ao longo do tempo.
 
-Funcionalidades
+🚀 Funcionalidades
 
 Mapa da Otimização
 Explicação didática das principais classificações em Pesquisa Operacional e Programação Matemática.
-
-Calculadora (1 SKU)
-
-Insira parâmetros de demanda, custos e lead time.
 
 Calcula o lote econômico de pedido (Q*), ponto de pedido (r) e estoque de segurança (SS).
 
