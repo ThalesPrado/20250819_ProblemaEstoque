@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.stats import norm
+from io import BytesIO   # ✅ ADICIONE ESTA LINHA
+
 
 st.set_page_config(page_title="Insumos do Shopping – Otimização de Estoques", layout="wide")
 
@@ -922,31 +924,6 @@ elif aba == "📑 Multi-SKU & Upload":
     st.header("📑 Multi-SKU – Upload CSV/Excel e Ranking de Economia")
 
     # -----------------------------
-    # ⚙️ Parâmetros gerais
-    # -----------------------------
-    st.sidebar.subheader("Multi-SKU – Opções")
-    base_tempo_multi = st.sidebar.radio(
-        "Base dos campos de demanda/desvio do ERP",
-        ["Mensal", "Semanal"], index=0,
-        help="Selecione se as colunas do ERP estão em base mensal ou semanal."
-    )
-    base_key_multi = "mensal" if base_tempo_multi == "Mensal" else "semanal"
-    periods_per_year_multi = 12 if base_key_multi == "mensal" else 52
-    periodo_label_multi = "mês" if base_key_multi == "mensal" else "semana"
-
-    aplicar_restricoes = st.sidebar.checkbox("Aplicar MOQ e Múltiplo do ERP", value=True)
-
-    heuristica_baseline = st.sidebar.selectbox(
-        "Se NÃO vier Q_base/r_base no Excel, baseline será:",
-        [
-            f"Q₀ = Demanda por {periodo_label_multi}, r₀ = μ_L + SS",
-            f"Q₀ = 2× Demanda por {periodo_label_multi}, r₀ = μ_L + SS",
-            "Q₀ = Q* ajustado por restrições (MOQ/Múltiplo), r₀ = μ_L + SS"
-        ],
-        help="Regra de comparação se seu ERP não fornecer o lote/ponto de pedido atuais."
-    )
-
-    # -----------------------------
     # 📤 Upload (somente Excel)
     # -----------------------------
     st.markdown("Faça upload do **Excel (.xlsx/.xls)** exportado do ERP com as colunas padrão.")
@@ -978,87 +955,106 @@ elif aba == "📑 Multi-SKU & Upload":
 """
 
         )
+        base_tempo_multi = st.sidebar.radio(
+        "Base dos campos de demanda/desvio do ERP",
+        ["Mensal", "Semanal"], index=0,
+        help="Selecione se as colunas do ERP estão em base mensal ou semanal."
+    )
+    base_key_multi = "mensal" if base_tempo_multi == "Mensal" else "semanal"
+    periods_per_year_multi = 12 if base_key_multi == "mensal" else 52
+    periodo_label_multi = "mês" if base_key_multi == "mensal" else "semana"
 
-    up = st.file_uploader("Solte aqui o Excel do ERP (.xlsx, .xls)", type=["xlsx", "xls"])
+    aplicar_restricoes = st.sidebar.checkbox("Aplicar MOQ e Múltiplo do ERP", value=True)
+
+    heuristica_baseline = st.sidebar.selectbox(
+        "Se NÃO vier Q_base/r_base no Excel, baseline será:",
+        [
+            f"Q₀ = Demanda por {periodo_label_multi}, r₀ = μ_L + SS",
+            f"Q₀ = 2× Demanda por {periodo_label_multi}, r₀ = μ_L + SS",
+            "Q₀ = Q* ajustado por restrições (MOQ/Múltiplo), r₀ = μ_L + SS"
+        ],
+        help="Regra de comparação se seu ERP não fornecer o lote/ponto de pedido atuais."
+    )
+
+    up = st.file_uploader("Solte aqui o Excel do ERP (.xlsx, .xls)", type=["xlsx", "xls"], key="upload_multi")
     if not up:
         st.info("🧭 Aguardando o Excel do ERP…")
         st.stop()
 
-    # -----------------------------
-    # 📥 Ler e validar o Excel
-    # -----------------------------
-    import pandas as pd
-    import numpy as np
-    from scipy.stats import norm
+    def read_excel_safely(file):
+        name = (file.name or "").lower()
+        if name.endswith(".xlsx"):
+            try:
+                import openpyxl  # noqa: F401
+                return pd.read_excel(file, engine="openpyxl")
+            except ImportError:
+                st.warning("⚠️ 'openpyxl' não encontrado. Tentando engine padrão do pandas.")
+                return pd.read_excel(file)
+            except Exception as e:
+                st.warning(f"Falha com 'openpyxl': {e}. Tentando engine padrão.")
+                return pd.read_excel(file)
+        elif name.endswith(".xls"):
+            try:
+                import xlrd  # noqa: F401
+                return pd.read_excel(file, engine="xlrd")
+            except ImportError:
+                st.error("❌ Para .xls é necessário 'xlrd' (pip install xlrd).")
+                st.stop()
+            except Exception as e:
+                st.error(f"❌ Não foi possível ler o .xls (xlrd): {e}")
+                st.stop()
+        else:
+            st.error("Formato não suportado. Use .xlsx ou .xls.")
+            st.stop()
 
     try:
-        # Deixe o pandas escolher o engine (normalmente openpyxl/lxml para .xlsx)
-        df_raw = pd.read_excel(up)
+        df_raw = read_excel_safely(up)
     except Exception as e:
-        st.error(f"Não foi possível ler o Excel: {e}")
+        st.error(f"❌ Não foi possível ler o Excel: {e}")
         st.stop()
 
-    # nomes esperados
     required_common = [
         "SKU", "Preco_unitario", "Taxa_carrying_anual",
         "Custo_pedido", "Lead_time_dias", "MOQ", "Multiplo", "SL"
     ]
-    if base_key_multi == "mensal":
-        required_specific = ["Demanda_mensal", "Desvio_mensal"]
-    else:
-        required_specific = ["Demanda_semanal", "Desvio_semanal"]
-
+    required_specific = ["Demanda_mensal", "Desvio_mensal"] if base_key_multi == "mensal" else ["Demanda_semanal", "Desvio_semanal"]
     required_cols = required_common + required_specific
     missing = [c for c in required_cols if c not in df_raw.columns]
     if missing:
         st.error(f"Colunas faltando no Excel do ERP: {missing}")
         st.stop()
 
-    # colunas opcionais
     has_Qbase = "Q_base" in df_raw.columns
     has_rbase = "r_base" in df_raw.columns
 
-    # -----------------------------
-    # 🔧 Funções de cálculo (reuso)
-    # -----------------------------
     def eoq(D_per, K, h_per):
-        if D_per is None or D_per <= 0 or K < 0 or h_per <= 0:
-            return np.nan
+        if D_per is None or D_per <= 0 or K < 0 or h_per <= 0: return np.nan
         return np.sqrt((2.0 * K * D_per) / h_per)
 
     def custos_periodicos(Q, D_per, K, h_per, SS=0.0):
-        if Q is None or Q <= 0 or D_per <= 0 or h_per < 0 or K < 0:
-            return np.nan, np.nan, np.nan
+        if Q is None or Q <= 0 or D_per <= 0 or h_per < 0 or K < 0: return np.nan, np.nan, np.nan
         c_ped = K * D_per / Q
         c_pos = h_per * (Q / 2.0 + max(0.0, SS))
         return c_ped, c_pos, c_ped + c_pos
 
     def lead_time_stats_from_base(D_base, sigma_base, L_dias, base="mensal"):
         if base == "semanal":
-            d_dia = D_base / 7.0
-            sigma_d_dia = sigma_base / np.sqrt(7.0)
+            d_dia = D_base / 7.0; sigma_d_dia = sigma_base / np.sqrt(7.0)
         else:
-            d_dia = D_base / 30.0
-            sigma_d_dia = sigma_base / np.sqrt(30.0)
+            d_dia = D_base / 30.0; sigma_d_dia = sigma_base / np.sqrt(30.0)
         mu_L = d_dia * L_dias
         sigma_L = sigma_d_dia * np.sqrt(max(L_dias, 1))
         return mu_L, sigma_L, d_dia, sigma_d_dia
 
     def ajusta_por_moq_multiplo(q, moq=0, mult=0):
-        if q is None or np.isnan(q):
-            return q
+        if q is None or np.isnan(q): return q
         q_adj = float(q)
-        if moq and moq > 0 and q_adj < moq:
-            q_adj = float(moq)
-        if mult and mult > 0:
-            q_adj = float(mult) * np.ceil(q_adj / float(mult))
+        if moq and moq > 0 and q_adj < moq: q_adj = float(moq)
+        if mult and mult > 0: q_adj = float(mult) * np.ceil(q_adj / float(mult))
         return q_adj
 
-    # -----------------------------
-    # 🧮 Preparar DF padronizado
-    # -----------------------------
     D_col = "Demanda_mensal" if base_key_multi == "mensal" else "Demanda_semanal"
-    S_col = "Desvio_mensal" if base_key_multi == "mensal" else "Desvio_semanal"
+    S_col = "Desvio_mensal"  if base_key_multi == "mensal" else "Desvio_semanal"
 
     df = pd.DataFrame({
         "SKU": df_raw["SKU"].astype(str),
@@ -1074,65 +1070,38 @@ elif aba == "📑 Multi-SKU & Upload":
         "Q_base": pd.to_numeric(df_raw["Q_base"], errors="coerce") if has_Qbase else np.nan,
         "r_base": pd.to_numeric(df_raw["r_base"], errors="coerce") if has_rbase else np.nan,
     })
-
-    # saneamento básico
     df[["MOQ", "Multiplo"]] = df[["MOQ", "Multiplo"]].fillna(0.0)
 
-    # -----------------------------
-    # 🔢 Cálculo por SKU
-    # -----------------------------
     results = []
     for _, r in df.iterrows():
-        SKU = r["SKU"]
-        D_per = float(r["D_per"])
-        sigma_per = float(r["sigma_per"])
-        v = float(r["v"])
-        i_anual = float(r["i_anual"])
-        K = float(r["K"])
-        L = float(r["L_dias"])
-        SL = float(r["SL"])
-        moq = float(r["MOQ"])
-        mult = float(r["Multiplo"])
-        Qb_in = r["Q_base"]
-        rb_in = r["r_base"]
+        SKU = r["SKU"]; D_per = float(r["D_per"]); sigma_per = float(r["sigma_per"])
+        v = float(r["v"]); i_anual = float(r["i_anual"]); K = float(r["K"])
+        L = float(r["L_dias"]); SL = float(r["SL"]); moq = float(r["MOQ"]); mult = float(r["Multiplo"])
+        Qb_in = r["Q_base"]; rb_in = r["r_base"]
 
-        # custo de posse por período
         h_per = (i_anual * v) / periods_per_year_multi
-
-        # estatísticas do lead time
-        mu_L, sigma_L, d_dia, sigma_d_dia = lead_time_stats_from_base(
-            D_per, sigma_per, L, base=base_key_multi
-        )
+        mu_L, sigma_L, d_dia, sigma_d_dia = lead_time_stats_from_base(D_per, sigma_per, L, base=base_key_multi)
         z = norm.ppf(np.clip(SL / 100.0, 0.01, 0.999))
-        SS_opt = z * sigma_L
-        r_opt = mu_L + SS_opt
+        SS_opt = z * sigma_L; r_opt = mu_L + SS_opt
 
-        # EOQ e ajustes
         Q_opt_raw = eoq(D_per, K, h_per)
         Q_opt = ajusta_por_moq_multiplo(Q_opt_raw, moq if aplicar_restricoes else 0, mult if aplicar_restricoes else 0)
 
-        # Baseline
         if pd.notna(Qb_in) and Qb_in > 0:
             Q_base = float(Qb_in)
         else:
-            if heuristica_baseline.startswith(f"Q₀ = Demanda por"):
-                Q_base = D_per
-            elif heuristica_baseline.startswith("Q₀ = 2×"):
-                Q_base = 2.0 * D_per
+            if heuristica_baseline.startswith("Q₀ = Demanda por"): Q_base = D_per
+            elif heuristica_baseline.startswith("Q₀ = 2×"):        Q_base = 2.0 * D_per
             else:
                 Q_base = ajusta_por_moq_multiplo(Q_opt_raw, moq if aplicar_restricoes else 0, mult if aplicar_restricoes else 0)
-
         if aplicar_restricoes:
             Q_base = ajusta_por_moq_multiplo(Q_base, moq, mult)
 
         if pd.notna(rb_in) and rb_in > 0:
-            r_base = float(rb_in)
-            SS_base = max(0.0, r_base - mu_L)
+            r_base = float(rb_in); SS_base = max(0.0, r_base - mu_L)
         else:
-            SS_base = z * sigma_L
-            r_base = mu_L + SS_base
+            SS_base = z * sigma_L; r_base = mu_L + SS_base
 
-        # custos por período
         cped_opt, cpos_opt, ctot_opt = custos_periodicos(Q_opt, D_per, K, h_per, SS=SS_opt)
         cped_base, cpos_base, ctot_base = custos_periodicos(Q_base, D_per, K, h_per, SS=SS_base)
 
@@ -1165,24 +1134,20 @@ elif aba == "📑 Multi-SKU & Upload":
 
     df_out = pd.DataFrame(results)
 
-    # -----------------------------
-    # 🏆 Ranking
-    # -----------------------------
     st.subheader("🏆 Ranking de Economia (maior → menor)")
     ordenar_por = st.selectbox(
         "Ordenar por:",
         [f"Economia_{periodo_label_multi} (R$)", "Economia_anual (R$)", "Economia (%)"],
-        index=1
+        index=1, key="ordenar_por_multi"
     )
     df_rank = df_out.sort_values(by=ordenar_por, ascending=False).reset_index(drop=True)
 
-    filtro_texto = st.text_input("Filtrar por SKU (contém):", "")
+    filtro_texto = st.text_input("Filtrar por SKU (contém):", "", key="filtro_sku_multi")
     if filtro_texto:
         df_rank = df_rank[df_rank["SKU"].str.contains(filtro_texto, case=False, na=False)]
 
     st.dataframe(df_rank, use_container_width=True)
 
-    # KPIs
     colk1, colk2, colk3 = st.columns(3)
     soma_econ_per = pd.to_numeric(df_rank[f"Economia_{periodo_label_multi} (R$)"], errors="coerce").replace([np.inf, -np.inf], np.nan).sum(skipna=True)
     soma_econ_ano = pd.to_numeric(df_rank["Economia_anual (R$)"], errors="coerce").replace([np.inf, -np.inf], np.nan).sum(skipna=True)
@@ -1192,35 +1157,12 @@ elif aba == "📑 Multi-SKU & Upload":
     colk2.metric("Economia total anual", f"R$ {soma_econ_ano:,.2f}")
     colk3.metric("Economia média (%)", f"{med_econ_pct:,.2f}%")
 
-    st.caption(
-     "📌 **Como calculamos a economia:**\n\n"
-    "A economia é dada por: **Economia = Custo Baseline − Custo Ótimo**, "
-    "sempre mantendo o mesmo nível de serviço (SL).\n\n"
-    "🔹 **Fórmula técnica do custo total:**\n"
-    "Custo = K·D/Q + h·(Q/2 + SS), onde:\n"
-    "- K = custo por pedido (frete, burocracia etc.)\n"
-    "- D = demanda no período (mensal ou semanal)\n"
-    "- Q = lote de compra\n"
-    "- SS = estoque de segurança\n"
-    "- h = custo de manter 1 unidade em estoque, calculado como (i·v)/período, "
-    "com i = taxa de carregamento anual e v = preço unitário.\n\n"
-    "- Cada pedido tem um custo fixo (como chamar o motoboy).\n"
-    "- Cada unidade em estoque tem um custo de manter (como pagar aluguel pelo espaço ocupado).\n"
-    "- O modelo procura o **equilíbrio**: nem pedir muitas vezes em lotes pequenos, "
-    "nem deixar dinheiro parado com estoque grande demais.\n\n"
-    "👉 O ganho de economia vem exatamente desse equilíbrio."
-    )
+    st.caption("📌 Economia = Custo Baseline − Custo Ótimo (mesmo SL). Custo = K·D/Q + h·(Q/2 + SS).")
 
-    # -----------------------------
-    # 💾 Download Excel — engine com fallback
-    # -----------------------------
-    from io import BytesIO
     buf_xlsx = BytesIO()
-
-    # Preferir XlsxWriter (instalado); se falhar por qualquer motivo, usar openpyxl
     engine_name = "xlsxwriter"
     try:
-        import xlsxwriter  # garante disponibilidade
+        import xlsxwriter
     except Exception:
         engine_name = "openpyxl"
         st.warning("Usando engine 'openpyxl' para exportação (XlsxWriter indisponível).")
@@ -1230,7 +1172,6 @@ elif aba == "📑 Multi-SKU & Upload":
             df_rank.to_excel(writer, index=False, sheet_name="ranking")
             df_out.to_excel(writer, index=False, sheet_name="calculos")
     except Exception as e:
-        # fallback final automático do pandas (sem forçar engine)
         st.warning(f"Falha ao usar engine '{engine_name}'. Tentando engine padrão. Detalhe: {e}")
         buf_xlsx = BytesIO()
         with pd.ExcelWriter(buf_xlsx) as writer:
@@ -1241,5 +1182,6 @@ elif aba == "📑 Multi-SKU & Upload":
         label="💾 Baixar resultado (Excel)",
         data=buf_xlsx.getvalue(),
         file_name="resultado_multi_sku.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="download_multi"
     )
